@@ -1,0 +1,371 @@
+---
+title: Análisis de datos de Transcriptoma. Análisis de clustering y expresión diferencial.
+author: Carlos Cano y Coral Del Val
+date: "Feb. 2020"
+output:
+    
+  html_document: default
+  pdf_document: default
+  beamer_presentation: 
+        df_print: paged
+---
+ 	
+## La tecnología RNA-Seq
+
+Las tecnologías de secuenciación de ARN (RNA-Sequencing o RNA-Seq) tienen como objetivo identificar qué loci se expresan en una población celular en un instante dado, es decir, identificar secuencias de ARN en una población celular y cuantificar su abundancia. O sea, caracterizar el transcriptoma celular. Estas tecnologías permiten cuantificar la expresión de genes, descubrir nuevas secuencias transcritas a partir de ADN, identificar genes con splicing alternativo o detectar expresión específica de alelo, entre otros. Además, estas tecnologías han permitido caracterizar no sólo RNA mensajero (mRNA), sino también otros tipos de RNAs como los RNAs que no codifican proteínas (los llamados RNAs no codificantes o non-coding RNAs, ncRNAs) que incluyen los lncRNAs y los miRNAs, entre otros.
+
+Puedes consultar más detalles sobre la secuenciación de ARN en los siguientes enlaces: 
+[http://cshprotocols.cshlp.org/content/early/2015/04/11/pdb.top084970.abstract](http://cshprotocols.cshlp.org/content/early/2015/04/11/pdb.top084970.abstract)
+
+[https://www.nature.com/articles/nrg2484](https://www.nature.com/articles/nrg2484)
+
+[https://galaxyproject.org/tutorials/rb_rnaseq/](https://galaxyproject.org/tutorials/rb_rnaseq/ ) 
+
+Hay muchos pasos involucrados en el análisis de datos de RNA-Seq. Típicamente, este proceso comienza con el procesamiento de lecturas (reads), que se alinean contra un genoma de referencia para cuantificar el número de secuencias de ARN asociadas a cada loci genético. Esto produce una matriz de números sobre la que podemos realizar análisis estadísticos y computacionales. 
+En nuestro caso, y como aproximación inicial al problema, partiremos directamente de las matrices que cuantifican el número de lecturas asociadas a cada loci y nos centraremos en el análisis de estas matrices. 
+
+### Contenidos
+
+Los ejemplos de este tutorial han sido elaborados utilizando material del siguiente curso online: 
+Belinda Phipson, Maria Doyle, Jovana Maksimovic, Harriet Dashnow, Matt Ritchie
+[RNAseq analysis in R](http://combine-australia.github.io/2016-05-11-RNAseq/#setup), 2016.
+
+## El problema 
+
+En este tutorial abordaremos el problema propuesto en un paper de Nature Cell Biology: EGF-mediated induction of Mcl-1 at the switch to lactation is essential for alveolar cell survival  de Fu et al. en 2015. Este trabajo analiza los transcriptomas de células basales y luminales en las glándulas mamarias de ratonas embarazadas, con descendencia lactante y sin descendencia. Se presentan, por lo tanto, seis grupos de estudio, uno para cada combinación de tipo celular y condición.  Para cada grupo de estudio se toman dos muestras para el análisis. Por tanto, el número total de muestras del estudio es 12, como muestra el siguiente esquema. 
+
+Los investigadores de este estudio han puesto los datos a disposición de la comunidad, tanto los datos en bruto (raw data) con las lecturas generadas por el secuenciador, como los datos ya preprocesados (matrices numéricas) de las que partiremos en este tutorial. Para obtener estas matrices numéricas se ha aplicado previamente un alineamiento de las lecturas contra el genoma de referencia del ratón y un recuento del número de lecturas por loci, utilizando el software  featureCounts (más detalles en el artículo).
+
+Puedes obtener los datos de https://figshare.com/s/1d788fd384d33e913a2a . Para ello, haz click en el botón "Download all" y guarda el fichero 3219685.zip en tu ordenador. Descomprímelo y almacena los ficheros dentro de una carpeta "datos" en tu unidad de disco.  Nos referiremos a esta carpeta "datos" en el resto del tutorial. Establece la carpeta "datos" como tu directorio de trabajo: bien en RStudio a través de la opción "Set as Working Directory" de la ventana inferior derecha "Files", o bien directamente escribiendo el comando `setwd` en la consola de RStudio:
+```{r, eval=FALSE}
+setwd("Ruta al directorio que contiene tu carpeta 'datos'")
+```
+
+```{r, echo=FALSE}
+setwd("~/rna-seq")
+```
+
+Los datos completos de este experimento están disponibles en la base de datos Gene Expression Omnibus  (GEO) con el código de registro GSE60450. 
+
+## Análisis en R de matrices de conteos de RNA-Seq
+
+El fichero SampleInfo contiene información básica sobre las doce muestras de nuestro análisis (nombre de la muestra, tipo celular y estado). Cargamos esta información en el objeto sampleinfo y mostramos su contenido por pantalla:
+
+```{r}
+# Lee el fichero sampleInfo.txt que está en la carpeta datos
+sampleinfo <- read.delim("datos/SampleInfo_Corrected.txt")
+#View(sampleinfo)     # se puede ver con View
+sampleinfo           # o directamente poniendo el nombre del objeto 
+#cómo se obtendrían solo las tres últimas columnas del dataframe?
+sampleinfo[,2:4]
+```
+
+
+## Cargar las librerías necesarias
+
+La ventaja de utilizar un lenguaje de programación con tanto soporte entre la comunidad como es R es que todas las tareas que vamos a llevar a cabo ya han sido programadas por otras personas previamente. Estas personas han decidido poner estos programas a disposición de toda la comunidad, publicando lo que se denomina una biblioteca o paquete (en inglés, library). Entonces, el reto que afrontamos para analizar estos datos de RNA-Seq no es programar desde cero todo este análisis, sino buscar estos paquetes y aprender a manejarlos. En este tutorial os enseñamos algunos de los paquetes más comunes para analizar RNA-Seq y los pasos básicos. 
+
+### Instalación de paquetes (sólo es necesario hacerlo una vez)
+
+Lo primero será instalar en R los paquetes que vamos a utilizar. Recuerda que puedes instalar los paquetes con la instrucción install.packages() , por ejemplo:  install.packages("gplots"),  utilizando la pestaña Packages en RStudio (lateral inferior derecho), o desde la opción 'Tools'->'Install packages' del menú superior.
+
+```{r, eval=FALSE}
+##instalamos BioConductor, una suite de herramientas de bioinformática para R
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install()
+
+# instalamos los paquetes de BioConductor que necesitaremos para este análisis
+BiocManager::install("edgeR")  
+
+install.packages("gplots")
+```
+
+### Carga de librerías (es necesario hacerlo cada vez que ejecutemos nuestros scripts)
+```{r, message = FALSE}
+# cargamos las librerías para que nuestro script las utilicen
+library("edgeR")  # Procesar datos de conteos para NGS
+library("gplots") # Hacer clustering jerárquico y pintar heatmaps
+```
+
+## Leer la matriz de conteos
+
+Partiremos para este análisis de las matrices numéricas que indican el número de copias de cada loci. Para echar un vistazo a los datos puedes utilizar el comando  head. En RStudio, el comando View permite ver el dataframe en una nueva ventana. dim indica el tamaño del dataframe (número de filas y columnas). 
+
+```{r}
+# Lee los datos y los guarda en seqdata
+seqdata <- read.delim("datos/GSE60450_Lactation-GenewiseCounts.txt", stringsAsFactors = FALSE)
+head(seqdata)
+#View(seqdata)
+dim(seqdata)
+```
+
+El objeto  seqdata contiene información de los genes (un gen por fila), con información del id del gene en la Base de Datos Entrez (primera columna), la longitud de la secuencia del gen (segunda columna), y los recuentos del número de lecturas que han alineado contra ese gen en cada muestra el resto de las columnas. 
+
+## Formatear los datos
+
+Necesitamos preparar los datos para el análisis, lo que requiere construir una nueva matriz (la llamaremos countdata) en la que almacenamos únicamente los identificadores de genes (columna EntrezGeneID) como nombre de las filas o rownames  y los conteos numéricos de abundancia de cada gen en cada muestra. 
+```{r}
+# ¿Cómo podemos eliminar las primeras dos columnas de seqdata? 
+# (contienen información de los genes que ahora mismo no necesitamos)
+countdata <- seqdata[,-(1:2)]
+
+# ¿Cómo podemos almacenar los EntrezGeneID (columna 1) como rownames en el dataframe?
+rownames(countdata) <- seqdata[,1]
+
+# Vemos el resultado
+#View(countdata)
+# Los nombres de las columnas son demasiado largos
+colnames(countdata)
+
+```
+
+>`RETO` ¿Podrías acortar los nombres de las columnas para quedarnos sólo con los 7 primeros caracteres de cada nombre?
+Pista: 
+
+```{r}
+# función substr. Más información en la ayuda: 
+?substr
+# Ejemplo de uso
+substr("UnNombreLarguísimo", 1, 9)
+substr("UnNombreLarguísimo", 3, 8)
+
+# Aplicar substr sobre colnames(countdata) a ver qué pasa: 
+substr(colnames(countdata), 1, 5)
+```
+
+```{r, echo=FALSE}
+# Así todos los identificadores quedan iguales, probemos de 1 a 7 ...
+# Ahora lo hacemos y guardamos los nombres cortos como nuevos nombres de las muestras (colnames)
+colnames(countdata) <- substr(colnames(countdata), 1, 7)
+#View(countdata)
+head(countdata)
+```
+
+
+## Algunos análisis sencillos sobre la matriz de expresión
+
+> `RETO` ¿Cuál es el número total de lecturas de cada muestra?
+Pista: Busca en la ayuda la función colSums
+```{r}
+rowSums(countdata[1,])        #¿Qué indica el resultado de esta operación? 
+colSums(countdata)            #¿y de esta? 
+countdata["100503874",]       #¿y de esta? 
+countdata[(1:10), "MCL1.DG"]  #¿y de esta?
+# ¿Sabrías buscar entonces la muestra con más lecturas en total? 
+```
+
+```{r}
+which.max(colSums(countdata))
+```
+
+> `RETO` ¿Podrías pintar un diagrama de barras (barplot) con el número de lecturas de cada muestra?
+Pista: utiliza las funciones colSums y barplot
+```{r, echo=FALSE}
+barplot(colSums(countdata), names=colnames(countdata))
+title("Diagrama de barras del total de lecturas por muestra" )
+abline(h=median(colSums(countdata)),col="blue")
+```
+
+
+> `RETO` ¿Cuál es el gen con mayor expresión promedio?
+Pista: Busca en la ayuda la función rowMeans
+```{r}
+rowMeans(countdata[(1:10),])  #¿Qué indica el resultado de esta operación? 
+#rowMeans(countdata)           #¿y de esta?
+max(rowMeans(countdata))      #¿y de esta? 
+# ¿Sabrías buscar entonces el ID del gen con mayor expresión promedio?
+```
+
+```{r, echo=FALSE}
+which.max(rowMeans(countdata)) 
+```
+
+
+## Filtrado para eliminar genes no expresados
+
+Un paso habitual para simplificar el análisis y mejorar la potencia estadística de los test que potencialmente se apliquen sobre los datos es eliminar los genes que apenas se expresan en ninguna muestra (los genes que tienen bajo número de copias en las muestras).   Para ello, se suele emplear una escala de medida de número de copias de un gen (loci) por millón de lecturas (counts-per-million , CPM), de manera que sólo se seleccionan los loci que presentan un número de lecturas mayor que el umbral en, al menos, un cierto número de muestras. En nuestro caso, seleccionamos los genes con, al menos, 0.5 CPM en, al menos, dos muestras del estudio. Por las características de este experimento, un CPM de 0.5  significa que seleccionaremos aquellos genes para los que hayamos detectado, al menos, 10-15 lecturas (copias) en al menos dos de las doce muestras del estudio. Consideramos que los genes que no lleguen a ese mínimo apenas se expresan y serán descartados del análisis. 
+
+Para realizar este filtrado necesitamos calcular el número de CPMs para cada gen. Para ello, tendríamos que tener en cuenta, además,  que cada experimento de secuenciación produce un número total de lecturas distinto y distinto volumen de lecturas según la región genómica de que se trate (esto se denomina profundidad de lectura o sequencing depth). 
+
+La ventaja de utilizar un lenguaje como R es que podemos beneficiarnos del gran soporte que tiene en la comunidad científica. Existe un paquete de R, llamado edgeR que ya incorpora funciones para el cálculo del CPM, así que para programar este cálculo sólo tenemos que aprender a utilizar la función cpm:
+```{r}
+# Calcular CPMs
+myCPM <- cpm(countdata)
+# Echar un vistazo al resultado
+head(myCPM)
+# ¿Qué valores en mi matriz de CPMs son mayores que 0.5?...
+thresh <- myCPM > 0.5
+# Esto genera una matriz de valores booleanos (true/false)
+head(thresh)
+# Supongamos que exigimos valores de CPMs superiores a 0.5 en, al menos, dos muestras
+# Podemos sumar por filas para contar cuántos genes tienen al menos 2 TRUEs (pasan el umbral en, al menos, dos muestras)
+#rowSums(thresh)
+# 'table' hace automáticamente los recuentos para crear una tabla de contingencia
+table(rowSums(thresh))  # ¿Cuántos genes tienen CPMs por encima de 0.5 en todas las muestras? 
+# ¿Cuántos genes van a ser descartados?
+
+# Implementamos el filtro: genes que pasen el corte en, al menos, dos muestras ...
+keep <- rowSums(thresh) >= 2
+# keep contiene los índices de los genes que han pasado el corte. 
+# selecciono de countdata sólo los genes que pasan el corte 
+# y los guardo en counts.keep
+countdata.no.flat <- countdata[keep,]
+summary(keep)
+dim(countdata.no.flat)
+```
+
+> `RETO` ¿Cuántos genes teníamos en total? ¿Con cuántos nos hemos quedado tras el filtrado?
+
+En este tutorial nos estamos centrando en la caracterización de mRNAs asociados a genes. Si nuestro objetivo es caracterizar RNAs poco abundantes en la muestras (por ejemplo, RNAs no codificantes, cuya presencia en números absolutos es, en muchos casos, significativamente menor que la de mRNAs), sería conveniente aplicar otras técnicas de filtrado. 
+
+## Gráficas de análisis de distribuciones y Control de Calidad
+
+Podemos ahora hacer una gráfica con la distribución de la expresión de genes. Para observar estas distribuciones de expresión para cada muestra con más claridad aplicaremos una transformación logarítmica. Para ello, podemos volver a usar la función cpm con el argumento log=TRUE. 
+```{r}
+# Aplicamos el logaritmo base 2 a los recuentos
+logcpm <- cpm(countdata.no.flat, log=TRUE)
+# Pintamos la distribución
+plotDensities(logcpm, legend = "topright")
+
+# Ahora vamos a comparar las distribuciones de todas las muestras con boxplots
+boxplot(logcpm, xlab="", ylab="Recuento en Log2 por millón de lecturas",las=2)
+# Pintamos también una linea azul horizontal para la mediana de los logCPM
+abline(h=median(logcpm),col="blue")
+title("Boxplots de los log(CPM)")
+
+```
+
+> `DEBATE` ¿Consideraríais alguna de estas distribuciones diferente al resto? 
+
+Con estos boxplots podemos observar que la distribución de los log(CPM) no es idéntica entre unas muestras y otras, pero son suficientemente parecidas para considerarlas en un análisis conjunto. Si una muestra tuviera una caja muy desplazada respecto al resto (por ejemplo, su mediana estuviera mucho más alta o más baja que la línea azul horizontal), necesitaríamos realizar más comprobaciones sobre esta muestra antes de incluirla en el análisis conjunto. 
+
+> `RETO` ¿Cómo serían estas gráficas sobre los datos sin eliminar genes planos? 
+
+
+## Más plots
+
+Una de las visualizaciones más interesantes para analizar datos de RNA-Seq son los diagramas multidimensionales (MDSplots). En estos diagramas podemos visualizar un análisis de componentes principales para determinar las variables que introducen una mayor fuente de variación en los datos. Con un poco de suerte y si todo ha transcurrido bien en nuestro experimento, esperamos que se observe que la mayor fuente de variación en los datos se debe al grupo/tratamiento de la muestra. Este tipo de gráficos también permite detectar outliers en los datos. 
+
+```{r}
+plotMDS(logcpm)
+
+```
+
+Para hacer el plot más informativo, vamos a colorear las muestras según el tipo de línea celular asociada (basal o luminar). Esa información la teníamos almacenada en un dataframe llamado sampleinfo
+
+```{r}
+
+#View(sampleinfo)
+head(sampleinfo)
+sampleinfo$CellType
+# asociamos un color a cada tipo de muestra
+sample.color <- c("purple","orange")[sampleinfo$CellType]
+# usamos ese código de colores para pintar el MDSplot
+plotMDS(logcpm, col=sample.color)
+# añadimos leyenda y título
+legend("topleft",fill=c("purple","orange"),legend=levels(sampleinfo$CellType))
+title("MDSplot con muestras coloreadas según tipo celular")
+```
+Podemos hacer el mismo proceso y colorear las muestras según su estado (lactate, pregnant o virgin)
+
+```{r}
+#View(sampleinfo)
+head(sampleinfo)
+sampleinfo$Status
+# asociamos un color a cada tipo de muestra
+sample.color <- c("blue","red","dark green")[sampleinfo$Status]
+# usamos ese código de colores para pintar el MDSplot
+plotMDS(logcpm, col=sample.color)
+# añadimos leyenda y título
+legend("topleft",fill=c("blue","red","dark green"),legend=levels(sampleinfo$Status),cex=0.8)
+title("MDSplot con muestras coloreadas según estado")
+```
+
+> `RETO` ¿Cuál es la variable que explica la mayor parte de la variabilidad en los datos? ¿Y la segunda variable que explica la mayor parte de la variabilidad? (i.e. ¿Qué variables están asociadas a dim 1 y a dim 2, respectivamente, en los plots anteriores?) 
+
+> `RETO` Puedes utilizar color para los tipos de muestra y la forma de los puntos para el estado de la muestra. Explora el parámetro pch en plotMDS para obtener algo parecido al gráfico siguiente.
+
+```{r, echo=FALSE}
+# asociamos un color a cada tipo de muestra
+sample.color <- c("blue","red","dark green")[sampleinfo$Status]
+sample.symbol <- c(1,4)[sampleinfo$CellType]
+# usamos ese código de colores para pintar el MDSplot
+plotMDS(logcpm, col=sample.color, pch=sample.symbol)
+# añadimos leyenda y título
+legend("topleft",fill=c("blue","red","dark green"),legend=levels(sampleinfo$Status),cex=0.8)
+legend("topright",pch=c(1,4),legend=levels(sampleinfo$CellType),cex=0.8)
+
+title("MDSplot")
+```
+
+## Clustering jerárquico con heatmaps
+
+Para realizar un análisis inicial de las relaciones entre las muestras en estudio podemos utilizar Clustering Jerárquico. Los mapas de calor o heatmaps son una visualización muy útil para visualizar las relaciones entre muestras y entre genes. Para realizar un análisis cluster de nuestros datos podemos utilizar la función heatmap.2 del paquete gplots. En este código,  heatmap.2 calcula la matriz de distancia euclídea a partir de los recuentos en log(CPM) para los 500 genes que exhiben más varianza entre unas muestras y otras. 
+```{r}
+# Calculamos la varianza para cada gen usando la matriz logcpm
+var_genes <- apply(logcpm, 1, var)
+head(var_genes)
+# Elegimos los 500 genes de mayor varianza
+select_var <- names(sort(var_genes, decreasing=TRUE))[1:500]
+head(select_var)
+# Seleccionamos la submatriz de logcpm que incluye solo estos genes
+highly_variable_lcpm <- logcpm[select_var,]
+dim(highly_variable_lcpm)
+head(highly_variable_lcpm)
+
+# Elegimos colores para las columnas según su tipo de muestra
+col.cell <- c("red","blue")[sampleinfo$CellType]
+
+# Plot the heatmap
+heatmap.2(highly_variable_lcpm, 
+          trace="column", 
+          main="Expresión 500 genes de más varianza",
+          ColSideColors=col.cell, scale="row")
+```
+
+Observa el dendrograma sobre las muestras que aparece en la parte de arriba de la imagen. Se han empleado los colores azul y rojo para etiquetar las muestras en función de su tipo. 
+
+> `RETO` ¿Sabes si el algoritmo de clustering tiene en cuenta la clase de las muestras para obtener un resultado coincidente como el de la figura? ¿o no lo ha tenido en cuenta y resulta que ha coincidido?
+
+## Test estadísticos de expresión diferencial entre tipos de muestras
+
+Existen distintos paquetes que analizan estadísticamente datos de RNA-Seq en busca de genes con expresión significativamente diferente entre tipos de muestras. En este tutorial hacemos uso del paquete `limma` y su función `voom`, que transforma los conteos de lecturas en logCPMs y permite aplicar test estadísticos para encontrar diferencias significativas entre las muestras. 
+
+Para utilizar este paquete primero tenemos que configurar el diseño del experimento estadístico, indicando los distintos tipos de muestras de nuestro estudio (en nuestro caso, creamos un tipo por cada combinación de tipo de tejido y estado).
+
+```{r}
+labels <- paste(sampleinfo$SampleName, sampleinfo$CellType, sampleinfo$Status)
+group <- paste(sampleinfo$CellType,sampleinfo$Status,sep=".")
+group <- factor(group)
+
+#design es el diseño del experimento estadístico, donde se especifica el tipo de cada muestra respecto a tu tipo de tejido (basal, luminal) y estado (virgin, lactant, pregnant)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)
+
+# voom normaliza los conteos con log(CPMs)
+v <- voom(countdata.no.flat,design,plot = TRUE)  
+
+
+```
+
+Ahora que disponemos de los datos normalizados con Voom, podemos utilizar limma para el análisis de expresión diferencial. Para ello, primero ajustamos un modelo lineal para cada gen utilizando la función lmFit de limma. lmFit necesita el objeto Voom y la matriz de diseño experimental que ya se han generado. 
+
+```{r}
+fit <- lmFit(v)
+names(fit)
+```
+
+lmFit estima el promedio de cada gen en cada grupo y la variación entre grupos. Recordemos que cada grupo está en nuestro caso definido como una combinación Tipo de Tejido - Estado.
+
+Ahora toca indicar entre qué grupos queremos calcular los genes diferencialmente expresados. Para ello, podemos emplear la función makeContrasts. En este ejemplo, buscamos genes diferencialmente expresados entre los grupos basal.pregnant y basal.lactate (por lo que definimos en este caso la hipótesis nula como basal.pregnant - basal.lactate = 0 para cada gen). Después de plantear la comparación de interés, utilizamos la función eBayes para hacer la estimación del estadístico t y su p-valor asociado. Finalmente, decideTest y topTable generan un resumen de los resultados obtenidos, indicando los genes diferencialmente expresados entre los tipos de muestras en orden creciente por p-valor. 
+
+```{r}
+cont.matrix <- makeContrasts(B.PregVsLac=basal.pregnant - basal.lactate,levels=design)
+fit.cont <- contrasts.fit(fit, cont.matrix)
+fit.cont <- eBayes(fit.cont)
+summa.fit <- decideTests(fit.cont)
+topTable(fit.cont,coef=1,sort.by="p")
+
+```
+
